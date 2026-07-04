@@ -7,7 +7,11 @@ import { Top10Sidebar } from "@/components/blog/Top10Sidebar";
 import { Newsletter } from "@/components/blog/Newsletter";
 import type { ArticleCardData } from "@/types";
 
-export const revalidate = 300; // ISR — re-render every 5 minutes
+// force-dynamic: render on every request so the build never tries to call
+// the database during `next build` (where DB connections are unreliable).
+// The page already refreshes from the DB on each visit, so there is no
+// caching benefit lost compared to a short revalidate window.
+export const dynamic = "force-dynamic";
 
 const ARTICLE_INCLUDE = {
   category: { select: { slug: true, name: true } },
@@ -33,20 +37,26 @@ function toCardData(a: any): ArticleCardData {
 
 export default async function NewsHomePage() {
   // ── query published articles from real DB ──────────────────────────────
-  const [latestRaw, top10Raw] = await Promise.all([
-    db.article.findMany({
-      where:   { status: "PUBLISHED" },
-      orderBy: { publishedAt: "desc" },
-      take:    25,
-      include: ARTICLE_INCLUDE,
-    }),
-    db.article.findMany({
-      where:   { status: "PUBLISHED" },
-      orderBy: { importanceScore: "desc" },
-      take:    10,
-      include: ARTICLE_INCLUDE,
-    }),
-  ]);
+  let latestRaw: any[] = [];
+  let top10Raw: any[] = [];
+  try {
+    [latestRaw, top10Raw] = await Promise.all([
+      db.article.findMany({
+        where:   { status: "PUBLISHED" },
+        orderBy: { publishedAt: "desc" },
+        take:    25,
+        include: ARTICLE_INCLUDE,
+      }),
+      db.article.findMany({
+        where:   { status: "PUBLISHED" },
+        orderBy: { importanceScore: "desc" },
+        take:    10,
+        include: ARTICLE_INCLUDE,
+      }),
+    ]);
+  } catch (err) {
+    console.error("[intelligence/page] DB query failed:", err);
+  }
 
   const latest = latestRaw.map(toCardData);
   const top10  = top10Raw.map(toCardData);

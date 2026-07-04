@@ -5,6 +5,13 @@ import { ArticleCard } from "@/components/blog/ArticleCard";
 import { db } from "@/lib/db";
 import type { ArticleCardData } from "@/types";
 
+// force-dynamic: category pages query the DB at render time.
+// Removing generateStaticParams (SSG) prevents Next.js from trying to
+// prerender all 14 category pages during `next build` — where the database
+// is unreachable — which caused PrismaClientInitializationError.
+// Pages are now rendered on-demand, keeping slug validation via notFound().
+export const dynamic = "force-dynamic";
+
 const ARTICLE_INCLUDE = {
   category: { select: { slug: true, name: true } },
   source:   { select: { slug: true, name: true } },
@@ -27,23 +34,24 @@ function toCardData(a: any): ArticleCardData {
   };
 }
 
-export function generateStaticParams() {
-  return CATEGORIES.map((c) => ({ category: c.slug }));
-}
-
 export default async function CategoryPage({ params }: { params: Promise<{ category: string }> }) {
   const { category } = await params;
   const meta = CATEGORIES.find((c) => c.slug === category);
   if (!meta) notFound();
 
-  const articlesRaw = await db.article.findMany({
-    where: {
-      status: "PUBLISHED",
-      category: { slug: category },
-    },
-    orderBy: { publishedAt: "desc" },
-    include: ARTICLE_INCLUDE,
-  });
+  let articlesRaw: any[] = [];
+  try {
+    articlesRaw = await db.article.findMany({
+      where: {
+        status: "PUBLISHED",
+        category: { slug: category },
+      },
+      orderBy: { publishedAt: "desc" },
+      include: ARTICLE_INCLUDE,
+    });
+  } catch (err) {
+    console.error(`[category/${category}] DB query failed:`, err);
+  }
 
   const articles = articlesRaw.map(toCardData);
 
