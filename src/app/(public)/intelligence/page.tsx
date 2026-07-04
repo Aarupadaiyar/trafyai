@@ -1,36 +1,79 @@
+import { db } from "@/lib/db";
 import { Hero } from "@/components/blog/Hero";
 import { HotNewsTicker } from "@/components/blog/HotNewsTicker";
 import { CategoryFilter } from "@/components/blog/CategoryFilter";
 import { ArticleCard } from "@/components/blog/ArticleCard";
 import { Top10Sidebar } from "@/components/blog/Top10Sidebar";
-import { TrendingCompanies, UpcomingEvents, PopularTags } from "@/components/blog/SidebarWidgets";
 import { Newsletter } from "@/components/blog/Newsletter";
-import {
-  MOCK_ARTICLES,
-  MOCK_TRENDING_COMPANIES,
-  MOCK_EVENTS,
-  MOCK_TAGS,
-} from "@/lib/mock-data";
+import type { ArticleCardData } from "@/types";
 
-// import { db } from "@/lib/db";
-//
-// Real implementation once the DB is seeded:
-//   const [featured, latest, top10] = await Promise.all([
-//     db.article.findFirst({ where: { status: "PUBLISHED", isFeatured: true }, orderBy: { publishedAt: "desc" }, include: { category: true, source: true, author: true } }),
-//     db.article.findMany({ where: { status: "PUBLISHED" }, orderBy: { publishedAt: "desc" }, take: 12, include: { category: true, source: true, author: true } }),
-//     db.article.findMany({ where: { status: "PUBLISHED" }, orderBy: { popularityScore: "desc" }, take: 10, include: { category: true, source: true, author: true } }),
-//   ]);
+export const revalidate = 300; // ISR — re-render every 5 minutes
 
-export const revalidate = 300; // ISR — re-render at most every 5 minutes
+const ARTICLE_INCLUDE = {
+  category: { select: { slug: true, name: true } },
+  source:   { select: { slug: true, name: true } },
+  author:   { select: { slug: true, name: true } },
+} as const;
+
+function toCardData(a: any): ArticleCardData {
+  return {
+    id:             a.id,
+    slug:           a.slug,
+    title:          a.title,
+    summary:        a.summary,
+    thumbnailUrl:   a.thumbnailUrl ?? null,
+    category:       a.category,
+    source:         a.source,
+    author:         a.author ?? null,
+    publishedAt:    (a.publishedAt ?? a.createdAt).toISOString(),
+    readingTimeMins: a.readingTimeMins,
+    popularityScore: a.popularityScore,
+  };
+}
 
 export default async function NewsHomePage() {
-  const [featured, ...latest] = MOCK_ARTICLES;
-  const top10 = [...MOCK_ARTICLES].sort((a, b) => b.popularityScore - a.popularityScore);
+  // ── query published articles from real DB ──────────────────────────────
+  const [latestRaw, top10Raw] = await Promise.all([
+    db.article.findMany({
+      where:   { status: "PUBLISHED" },
+      orderBy: { publishedAt: "desc" },
+      take:    25,
+      include: ARTICLE_INCLUDE,
+    }),
+    db.article.findMany({
+      where:   { status: "PUBLISHED" },
+      orderBy: { importanceScore: "desc" },
+      take:    10,
+      include: ARTICLE_INCLUDE,
+    }),
+  ]);
+
+  const latest = latestRaw.map(toCardData);
+  const top10  = top10Raw.map(toCardData);
+
+  // First article in the list becomes the Hero
+  const [featured, ...rest] = latest;
+
+  // No articles yet — show a clear message instead of crashing or falling back to mock data
+  if (!featured) {
+    return (
+      <main className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center px-6">
+        <h1 className="text-2xl font-bold text-ink">No articles yet</h1>
+        <p className="text-gray-body max-w-md">
+          Run <code className="font-mono bg-cream-dim px-1 rounded">npm run scrape:manual</code> to
+          pull real articles from live sources, then reload this page.
+        </p>
+      </main>
+    );
+  }
 
   return (
     <main>
       <Hero article={featured} />
-      <HotNewsTicker items={MOCK_ARTICLES.slice(0, 5)} />
+
+      {rest.length > 0 && (
+        <HotNewsTicker items={rest.slice(0, 8).map((a) => ({ slug: a.slug, title: a.title }))} />
+      )}
 
       <section className="mx-auto max-w-7xl px-6 py-14 lg:px-10">
         <div className="mb-8">
@@ -38,20 +81,23 @@ export default async function NewsHomePage() {
         </div>
 
         <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1fr_340px]">
+          {/* ── Article grid ─────────────────────────────────────────── */}
           <div>
             <h2 className="mb-6 text-display-sm text-ink">Latest News</h2>
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-              {latest.map((article) => (
-                <ArticleCard key={article.id} article={article} />
-              ))}
-            </div>
+            {rest.length > 0 ? (
+              <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                {rest.map((article) => (
+                  <ArticleCard key={article.id} article={article} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-body">Only one article so far — run the scraper again to populate more.</p>
+            )}
           </div>
 
+          {/* ── Sidebar ──────────────────────────────────────────────── */}
           <aside className="space-y-6">
-            <Top10Sidebar articles={top10} />
-            <TrendingCompanies companies={MOCK_TRENDING_COMPANIES} />
-            <UpcomingEvents events={MOCK_EVENTS} />
-            <PopularTags tags={MOCK_TAGS} />
+            {top10.length > 0 && <Top10Sidebar articles={top10} />}
             <Newsletter source="sidebar" />
           </aside>
         </div>

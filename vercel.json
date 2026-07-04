@@ -1,5 +1,5 @@
 {
   "crons": [
-    { "path": "/api/cron/scrape", "schedule": "0 7 * * *" }
+    { "path": "/api/cron/scrape?digest=true", "schedule": "0 7 * * *" }
   ]
 }

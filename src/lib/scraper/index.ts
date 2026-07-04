@@ -4,9 +4,16 @@ import { fetchRssSource } from "./fetchers/rss";
 import { fetchScrapeSource } from "./fetchers/scrape";
 import { fetchArxivSource } from "./fetchers/arxiv";
 import { fetchRedditSource } from "./fetchers/reddit";
-import { isExactDuplicate, findClusterMatch } from "./dedupe";
+import { findClusterMatch } from "./dedupe";
 import { computeImportanceScore } from "./scoring";
 import { scrapedArticleSchema, type ScrapedArticle } from "@/lib/validations/article";
+import {
+  resolveUrl,
+  fetchAndResolveUrl,
+  extractArticleDetails,
+  isPlausibleTitle,
+  isPlausibleSummary,
+} from "./extractor";
 import readingTime from "reading-time";
 
 export interface ScrapeRunSummary {
@@ -14,126 +21,330 @@ export interface ScrapeRunSummary {
   status: "SUCCESS" | "PARTIAL" | "FAILED";
   itemsFound: number;
   itemsNew: number;
+  itemsUpdated: number;
   itemsDuped: number;
+  itemsSkipped: number;
   durationMs: number;
   errorMessage?: string;
 }
 
 const FETCHERS: Record<string, (s: SourceConfig) => Promise<Partial<ScrapedArticle>[]>> = {
-  RSS: fetchRssSource,
+  RSS:    fetchRssSource,
   SCRAPE: fetchScrapeSource,
-  ARXIV: fetchArxivSource,
+  ARXIV:  fetchArxivSource,
   REDDIT: fetchRedditSource,
-  API: fetchRssSource,   // placeholder — swap per-source once API creds exist (e.g. PapersWithCode, ProductHunt)
+  API:    fetchRssSource,
   GITHUB: fetchScrapeSource,
 };
 
+function getMinInterval(slug: string, type: string): number {
+  if (type === "REDDIT") return 60; // Reddit rate limits are strict
+  if (type === "ARXIV") return 30;  // arXiv asks for throttled access
+  if (type === "SCRAPE") return 15; // Scraped HTML listing pages
+  return 10;                        // Default RSS/API
+}
+
 /**
- * Entry point called by both the 7 AM cron route and the admin "run scraper
- * manually" button. Iterates every active source, fetches, dedupes, scores,
- * and persists new articles as PENDING for admin triage. Never throws — a
- * single source failing is logged and skipped so the rest of the run
- * completes.
+ * Entry point called by both the cron route and the admin "run scraper" button.
+ * Iterates every active source, fetches, validates, dedupes, scores, and persists
+ * articles as PUBLISHED. A single source failure never blocks the rest of the run.
  */
-export async function runFullScrape(): Promise<ScrapeRunSummary[]> {
-  const activeSources = SOURCES; // in production, filter by Source.isActive from DB
+export async function runFullScrape(force = false): Promise<ScrapeRunSummary[]> {
+  // ── 1. Concurrency Guard ───────────────────────────────────────────────
+  // Find or create the special 'scraper-lock' system source record
+  const lockSource = await db.source.upsert({
+    where: { slug: "scraper-lock" },
+    create: {
+      slug: "scraper-lock",
+      name: "Scraper Concurrency Lock",
+      type: "API",
+      homepageUrl: "https://trafy.ai",
+      isActive: false,
+    },
+    update: {},
+  });
+
+  // Check if there is an active lock (status === PARTIAL) in the last 10 minutes
+  const activeLock = await db.scrapeLog.findFirst({
+    where: {
+      sourceId: lockSource.id,
+      status: "PARTIAL",
+      runAt: { gte: new Date(Date.now() - 10 * 60 * 1000) },
+    },
+    orderBy: { runAt: "desc" },
+  });
+
+  if (!force && activeLock) {
+    console.log(`[SKIP RUN] Another scrape run is already in progress (started at ${activeLock.runAt.toISOString()})`);
+    return [
+      {
+        sourceSlug: "scraper-lock",
+        status: "FAILED",
+        itemsFound: 0,
+        itemsNew: 0,
+        itemsUpdated: 0,
+        itemsDuped: 0,
+        itemsSkipped: 0,
+        durationMs: 0,
+        errorMessage: "skipped — previous run still in progress",
+      },
+    ];
+  }
+
+  // Create lock log to PARTIAL (in progress)
+  const currentLockLog = await db.scrapeLog.create({
+    data: {
+      sourceId: lockSource.id,
+      status: "PARTIAL",
+      runAt: new Date(),
+    },
+  });
+
   const summaries: ScrapeRunSummary[] = [];
 
-  for (const sourceConfig of activeSources) {
-    const start = Date.now();
-    let itemsFound = 0;
-    let itemsNew = 0;
-    let itemsDuped = 0;
+  try {
+    // Run scrape loop over all sources excluding 'scraper-lock'
+    const activeSources = SOURCES.filter((s) => s.slug !== "scraper-lock");
 
-    try {
-      const source = await db.source.upsert({
-        where: { slug: sourceConfig.slug },
-        create: {
-          slug: sourceConfig.slug,
-          name: sourceConfig.name,
-          type: sourceConfig.type,
-          feedUrl: sourceConfig.feedUrl,
-          homepageUrl: sourceConfig.homepageUrl,
-        },
-        update: {},
-      });
+    for (const sourceConfig of activeSources) {
+      const start = Date.now();
+      let itemsFound = 0, itemsNew = 0, itemsUpdated = 0, itemsDuped = 0, itemsSkipped = 0;
 
-      const fetcher = FETCHERS[sourceConfig.type];
-      const rawItems = await fetcher(sourceConfig);
-      itemsFound = rawItems.length;
-
-      for (const raw of rawItems) {
-        const parsed = scrapedArticleSchema.safeParse({
-          ...raw,
-          importanceScore: raw.importanceScore ?? 0,
-          tags: [],
-        });
-        if (!parsed.success) continue;
-
-        const article = parsed.data;
-
-        if (await isExactDuplicate(article.sourceUrl)) {
-          itemsDuped++;
-          continue;
-        }
-
-        const clusterId = await findClusterMatch(article);
-        const category = await db.category.upsert({
-          where: { slug: article.categorySlug },
-          create: { slug: article.categorySlug, name: titleCase(article.categorySlug) },
+      try {
+        // Ensure source row exists
+        const source = await db.source.upsert({
+          where:  { slug: sourceConfig.slug },
+          create: {
+            slug:        sourceConfig.slug,
+            name:        sourceConfig.name,
+            type:        sourceConfig.type,
+            feedUrl:     sourceConfig.feedUrl,
+            homepageUrl: sourceConfig.homepageUrl,
+          },
           update: {},
         });
 
-        const author = article.authorName
-          ? await db.author.upsert({
-              where: { slug: slugify(article.authorName) },
-              create: { slug: slugify(article.authorName), name: article.authorName },
-              update: {},
-            })
-          : null;
+        // Rate limit / backoff check
+        if (!force) {
+          const lastSuccess = await db.scrapeLog.findFirst({
+            where: { sourceId: source.id, status: "SUCCESS" },
+            orderBy: { runAt: "desc" },
+          });
+          if (lastSuccess) {
+            const elapsedMinutes = (Date.now() - lastSuccess.runAt.getTime()) / (1000 * 60);
+            const minInterval = getMinInterval(sourceConfig.slug, sourceConfig.type);
+            if (elapsedMinutes < minInterval) {
+              console.log(`[SKIP FETCH] ${sourceConfig.slug} was successfully scraped ${Math.round(elapsedMinutes)} mins ago (min: ${minInterval} mins)`);
+              summaries.push({
+                sourceSlug: sourceConfig.slug,
+                status: "SUCCESS",
+                itemsFound: 0,
+                itemsNew: 0,
+                itemsUpdated: 0,
+                itemsDuped: 0,
+                itemsSkipped: 0,
+                durationMs: 0,
+              });
+              continue;
+            }
+          }
+        }
 
-        await db.article.create({
-          data: {
-            slug: `${slugify(article.title)}-${Date.now().toString(36)}`,
-            title: article.title,
-            summary: article.summary,
-            content: article.content,
-            thumbnailUrl: article.thumbnailUrl,
-            sourceUrl: article.sourceUrl,
-            sourceId: source.id,
-            categoryId: category.id,
-            authorId: author?.id,
-            status: "PENDING",
-            importanceScore: computeImportanceScore(article),
-            readingTimeMins: Math.max(1, Math.ceil(readingTime(article.content).minutes)),
-            publishedAt: article.publishedAt,
-            clusterId,
-          },
+        const fetcher = FETCHERS[sourceConfig.type];
+        if (!fetcher) throw new Error(`No fetcher for type "${sourceConfig.type}"`);
+
+        const rawItems = await fetcher(sourceConfig);
+        itemsFound = rawItems.length;
+        console.log(`[${sourceConfig.slug}] fetched ${itemsFound} raw items`);
+
+        for (const raw of rawItems) {
+          // ── 1. Resolve & validate URL ────────────────────────────────────────
+          const rawUrl = resolveUrl(raw.sourceUrl ?? "", sourceConfig.homepageUrl);
+          if (!rawUrl) {
+            console.log(`  [SKIP] empty URL`);
+            itemsSkipped++;
+            continue;
+          }
+
+          const check = await fetchAndResolveUrl(rawUrl);
+          if (!check.ok) {
+            console.log(`  [SKIP] ${check.status ?? "ERR"} ${rawUrl} — ${check.error ?? ""}`);
+            itemsSkipped++;
+            continue;
+          }
+          const resolvedUrl = check.resolvedUrl;
+
+          // ── 2. Check for existing DB record (update-on-change) ───────────────
+          const existing = await db.article.findUnique({ where: { sourceUrl: resolvedUrl } });
+
+          // ── 3. Fetch article page for quality metadata + image ───────────────
+          const extracted = await extractArticleDetails(resolvedUrl, {
+            title:       raw.title,
+            summary:     raw.summary,
+            content:     raw.content,
+            authorName:  raw.authorName,
+            publishedAt: raw.publishedAt,
+            thumbnailUrl: raw.thumbnailUrl,
+          });
+
+          // ── 4. Quality gates ─────────────────────────────────────────────────
+          if (!isPlausibleTitle(extracted.title)) {
+            console.log(`  [SKIP] bad title: "${extracted.title?.slice(0, 60)}"`);
+            itemsSkipped++;
+            continue;
+          }
+          if (!isPlausibleSummary(extracted.summary)) {
+            console.log(`  [SKIP] bad summary (${extracted.summary?.length ?? 0} chars) for ${resolvedUrl}`);
+            itemsSkipped++;
+            continue;
+          }
+          if (!extracted.content?.trim()) {
+            console.log(`  [SKIP] empty content for ${resolvedUrl}`);
+            itemsSkipped++;
+            continue;
+          }
+
+          // ── 5. Validate with Zod schema ──────────────────────────────────────
+          const parsed = scrapedArticleSchema.safeParse({
+            ...raw,
+            title:           extracted.title,
+            summary:         extracted.summary!.slice(0, 590),
+            content:         extracted.content,
+            sourceUrl:       resolvedUrl,
+            thumbnailUrl:    extracted.thumbnailUrl,
+            authorName:      extracted.authorName,
+            publishedAt:     extracted.publishedAt ?? raw.publishedAt ?? new Date(),
+            importanceScore: raw.importanceScore ?? 0,
+            tags: [],
+          });
+
+          if (!parsed.success) {
+            const errs = JSON.stringify(parsed.error.flatten().fieldErrors);
+            console.log(`  [SKIP] schema fail for ${resolvedUrl}: ${errs}`);
+            itemsSkipped++;
+            continue;
+          }
+
+          const article = parsed.data;
+
+          // ── 6a. UPDATE if duplicate with changed content ─────────────────────
+          if (existing) {
+            const changed =
+              existing.title        !== article.title ||
+              existing.summary      !== article.summary ||
+              existing.thumbnailUrl !== article.thumbnailUrl;
+
+            if (changed) {
+              await db.article.update({
+                where: { id: existing.id },
+                data: {
+                  title:        article.title,
+                  summary:      article.summary,
+                  thumbnailUrl: article.thumbnailUrl,
+                  updatedAt:    new Date(),
+                },
+              });
+              console.log(`  [UPDATE] ${resolvedUrl}`);
+              itemsUpdated++;
+            } else {
+              itemsDuped++;
+            }
+            continue;
+          }
+
+          // ── 6b. INSERT new article ────────────────────────────────────────────
+          const clusterId = await findClusterMatch(article);
+
+          const category = await db.category.upsert({
+            where:  { slug: article.categorySlug },
+            create: { slug: article.categorySlug, name: titleCase(article.categorySlug) },
+            update: {},
+          });
+
+          const author = article.authorName
+            ? await db.author.upsert({
+                where:  { slug: slugify(article.authorName) },
+                create: { slug: slugify(article.authorName), name: article.authorName },
+                update: {},
+              })
+            : null;
+
+          const slug = `${slugify(article.title)}-${Date.now().toString(36)}`;
+
+          await db.article.create({
+            data: {
+              slug,
+              title:          article.title,
+              summary:        article.summary,
+              content:        article.content,
+              thumbnailUrl:   article.thumbnailUrl ?? null,
+              sourceUrl:      resolvedUrl,
+              sourceId:       source.id,
+              categoryId:     category.id,
+              authorId:       author?.id ?? null,
+              status:         "PUBLISHED",
+              publishedAt:    article.publishedAt,
+              importanceScore: computeImportanceScore(article),
+              readingTimeMins: Math.max(1, Math.ceil(readingTime(article.content).minutes)),
+              clusterId:      clusterId ?? null,
+            },
+          });
+
+          console.log(`  [NEW] "${article.title.slice(0, 70)}"`);
+          itemsNew++;
+        }
+
+        await logRun(source.id, "SUCCESS", itemsFound, itemsNew, itemsDuped, Date.now() - start);
+        summaries.push({
+          sourceSlug: sourceConfig.slug, status: "SUCCESS",
+          itemsFound, itemsNew, itemsUpdated, itemsDuped, itemsSkipped,
+          durationMs: Date.now() - start,
         });
-        itemsNew++;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[${sourceConfig.slug}] FAILED: ${message}`);
+        const src = await db.source.findUnique({ where: { slug: sourceConfig.slug } });
+        if (src) await logRun(src.id, "FAILED", itemsFound, itemsNew, itemsDuped, Date.now() - start, message);
+        summaries.push({
+          sourceSlug: sourceConfig.slug, status: "FAILED",
+          itemsFound, itemsNew, itemsUpdated, itemsDuped, itemsSkipped,
+          durationMs: Date.now() - start, errorMessage: message,
+        });
       }
-
-      await logRun(source.id, "SUCCESS", itemsFound, itemsNew, itemsDuped, Date.now() - start);
-      summaries.push({ sourceSlug: sourceConfig.slug, status: "SUCCESS", itemsFound, itemsNew, itemsDuped, durationMs: Date.now() - start });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      const source = await db.source.findUnique({ where: { slug: sourceConfig.slug } });
-      if (source) await logRun(source.id, "FAILED", itemsFound, itemsNew, itemsDuped, Date.now() - start, message);
-      summaries.push({ sourceSlug: sourceConfig.slug, status: "FAILED", itemsFound, itemsNew, itemsDuped, durationMs: Date.now() - start, errorMessage: message });
     }
+  } finally {
+    // Release the concurrency lock log to SUCCESS
+    await db.scrapeLog.update({
+      where: { id: currentLockLog.id },
+      data: {
+        status: "SUCCESS",
+        durationMs: Date.now() - currentLockLog.runAt.getTime(),
+      },
+    });
   }
 
   return summaries;
 }
 
-async function logRun(sourceId: string, status: "SUCCESS" | "FAILED", itemsFound: number, itemsNew: number, itemsDuped: number, durationMs: number, errorMessage?: string) {
+// ── helpers ────────────────────────────────────────────────────────────────
+
+async function logRun(
+  sourceId: string, status: "SUCCESS" | "FAILED",
+  itemsFound: number, itemsNew: number, itemsDuped: number,
+  durationMs: number, errorMessage?: string
+) {
   await db.scrapeLog.create({
     data: { sourceId, status, itemsFound, itemsNew, itemsDuped, durationMs, errorMessage },
   });
 }
 
 function slugify(text: string) {
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 80);
+  return text
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 80);
 }
 
 function titleCase(slug: string) {

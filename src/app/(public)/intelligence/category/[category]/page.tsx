@@ -1,14 +1,30 @@
 import { notFound } from "next/navigation";
 import { CategoryFilter, CATEGORIES } from "@/components/blog/CategoryFilter";
 import { ArticleCard } from "@/components/blog/ArticleCard";
-import { MOCK_ARTICLES } from "@/lib/mock-data";
+import { db } from "@/lib/db";
+import type { ArticleCardData } from "@/types";
 
-// Real implementation:
-//   const articles = await db.article.findMany({
-//     where: { status: "PUBLISHED", category: { slug: params.category } },
-//     orderBy: { publishedAt: "desc" },
-//     include: { category: true, source: true, author: true },
-//   });
+const ARTICLE_INCLUDE = {
+  category: { select: { slug: true, name: true } },
+  source:   { select: { slug: true, name: true } },
+  author:   { select: { slug: true, name: true } },
+} as const;
+
+function toCardData(a: any): ArticleCardData {
+  return {
+    id:             a.id,
+    slug:           a.slug,
+    title:          a.title,
+    summary:        a.summary,
+    thumbnailUrl:   a.thumbnailUrl ?? null,
+    category:       a.category,
+    source:         a.source,
+    author:         a.author ?? null,
+    publishedAt:    (a.publishedAt ?? a.createdAt).toISOString(),
+    readingTimeMins: a.readingTimeMins,
+    popularityScore: a.popularityScore,
+  };
+}
 
 export function generateStaticParams() {
   return CATEGORIES.map((c) => ({ category: c.slug }));
@@ -19,7 +35,16 @@ export default async function CategoryPage({ params }: { params: Promise<{ categ
   const meta = CATEGORIES.find((c) => c.slug === category);
   if (!meta) notFound();
 
-  const articles = MOCK_ARTICLES.filter((a) => a.category.slug === category);
+  const articlesRaw = await db.article.findMany({
+    where: {
+      status: "PUBLISHED",
+      category: { slug: category },
+    },
+    orderBy: { publishedAt: "desc" },
+    include: ARTICLE_INCLUDE,
+  });
+
+  const articles = articlesRaw.map(toCardData);
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-14 lg:px-10">

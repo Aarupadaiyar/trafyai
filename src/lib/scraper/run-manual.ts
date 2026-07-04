@@ -1,6 +1,6 @@
 import { runFullScrape } from "./index";
 
-runFullScrape()
+runFullScrape(true)
   .then((summaries) => {
     console.table(summaries);
     const failed = summaries.filter((s) => s.status === "FAILED");

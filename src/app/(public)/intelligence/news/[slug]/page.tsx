@@ -7,16 +7,36 @@ import { Badge } from "@/components/ui/badge";
 import { TableOfContents, type TocHeading } from "@/components/blog/TableOfContents";
 import { ArticleCard } from "@/components/blog/ArticleCard";
 import { formatDate } from "@/lib/utils";
-import { MOCK_ARTICLES } from "@/lib/mock-data";
+import { db } from "@/lib/db";
+import type { ArticleCardData } from "@/types";
 
-// Real implementation:
-//   const article = await db.article.findUnique({ where: { slug }, include: { category: true, source: true, author: true, tags: { include: { tag: true } } } });
-//   const related = await db.article.findMany({ where: { categoryId: article.categoryId, id: { not: article.id } }, take: 3 });
-//   await db.articleView.create({ data: { articleId: article.id, referrer } }); // fire on client, not here, to avoid double-counting on prefetch
+const ARTICLE_INCLUDE = {
+  category: { select: { slug: true, name: true } },
+  source:   { select: { slug: true, name: true } },
+  author:   { select: { slug: true, name: true } },
+} as const;
+
+function toCardData(a: any): ArticleCardData {
+  return {
+    id:             a.id,
+    slug:           a.slug,
+    title:          a.title,
+    summary:        a.summary,
+    thumbnailUrl:   a.thumbnailUrl ?? null,
+    category:       a.category,
+    source:         a.source,
+    author:         a.author ?? null,
+    publishedAt:    (a.publishedAt ?? a.createdAt).toISOString(),
+    readingTimeMins: a.readingTimeMins,
+    popularityScore: a.popularityScore,
+  };
+}
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const article = MOCK_ARTICLES.find((a) => a.slug === slug);
+  const article = await db.article.findUnique({
+    where: { slug, status: "PUBLISHED" },
+  });
   if (!article) return {};
 
   return {
@@ -26,7 +46,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
       title: article.title,
       description: article.summary,
       type: "article",
-      publishedTime: article.publishedAt,
+      publishedTime: (article.publishedAt ?? article.createdAt).toISOString(),
       images: article.thumbnailUrl ? [article.thumbnailUrl] : [],
     },
     twitter: {
@@ -35,56 +55,53 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
       description: article.summary,
     },
     alternates: {
-      canonical: `${process.env.NEXT_PUBLIC_SITE_URL}/news/${article.slug}`,
+      canonical: `${process.env.NEXT_PUBLIC_MAIN_SITE_URL || "https://trafy.ai"}/intelligence/news/${article.slug}`,
     },
   };
 }
 
 function extractHeadings(mdx: string): TocHeading[] {
   const matches = [...mdx.matchAll(/^(##{1,2})\s+(.+)$/gm)];
-  return matches.map((m) => ({
-    depth: m[1].length,
-    text: m[2],
-    id: m[2].toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
-  }));
+  return matches.map((m) => {
+    const text = m[2] || "";
+    return {
+      depth: m[1] ? m[1].length : 2,
+      text,
+      id: text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
+    };
+  });
 }
-
-const SAMPLE_BODY = `
-Anthropic's latest release focuses on three areas: longer context, more reliable
-tool use, and lower latency for interactive agent loops.
-
-## What changed
-
-The context window extends to 2 million tokens, roughly 8x the prior generation,
-enabling full-codebase or full-contract analysis in a single call.
-
-## Benchmarks
-
-Early evals show meaningful gains on long-document QA, with the largest
-improvements on tasks requiring information synthesis across widely separated
-sections of the input.
-
-## What it means for developers
-
-Teams building long-running agents get more headroom before needing to manage
-context manually — summarization and retrieval layers become optional rather
-than mandatory for many workloads.
-`;
 
 export default async function ArticlePage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const article = MOCK_ARTICLES.find((a) => a.slug === slug);
+  const article = await db.article.findUnique({
+    where: { slug, status: "PUBLISHED" },
+    include: ARTICLE_INCLUDE,
+  });
+  
   if (!article) notFound();
 
-  const headings = extractHeadings(SAMPLE_BODY);
-  const related = MOCK_ARTICLES.filter((a) => a.category.slug === article.category.slug && a.id !== article.id).slice(0, 3);
+  const headings = extractHeadings(article.content);
+  
+  const relatedRaw = await db.article.findMany({
+    where: {
+      categoryId: article.categoryId,
+      id: { not: article.id },
+      status: "PUBLISHED",
+    },
+    orderBy: { publishedAt: "desc" },
+    take: 3,
+    include: ARTICLE_INCLUDE,
+  });
+
+  const related = relatedRaw.map(toCardData);
 
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "NewsArticle",
     headline: article.title,
     description: article.summary,
-    datePublished: article.publishedAt,
+    datePublished: (article.publishedAt ?? article.createdAt).toISOString(),
     author: article.author ? { "@type": "Person", name: article.author.name } : undefined,
     publisher: { "@type": "Organization", name: "Trafy Intelligence" },
   };
@@ -103,11 +120,11 @@ export default async function ArticlePage({ params }: { params: Promise<{ slug: 
           <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-gray-body">
             <span className="font-medium text-ink">{article.author?.name ?? article.source.name}</span>
             <span>·</span>
-            <span>{formatDate(article.publishedAt)}</span>
+            <span>{formatDate(article.publishedAt ?? article.createdAt)}</span>
             <span>·</span>
             <span>{article.readingTimeMins} min read</span>
             <span>·</span>
-            <a href={article.source.slug} className="hover:text-ink">Original source ↗</a>
+            <a href={article.sourceUrl} target="_blank" rel="noopener noreferrer" className="hover:text-ink font-medium">Original source ↗</a>
           </div>
         </div>
       </header>
@@ -120,7 +137,7 @@ export default async function ArticlePage({ params }: { params: Promise<{ slug: 
 
       <div className="mx-auto grid max-w-6xl grid-cols-1 gap-12 px-6 py-14 lg:grid-cols-[1fr_220px] lg:px-10">
         <article className="prose prose-neutral max-w-none prose-headings:font-bold prose-headings:tracking-tight prose-a:text-ink prose-a:underline">
-          <MDXRemote source={SAMPLE_BODY} />
+          <MDXRemote source={article.content} />
         </article>
         <TableOfContents headings={headings} />
       </div>

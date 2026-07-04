@@ -31,7 +31,7 @@
     "class-variance-authority": "0.7.0",
     "clsx": "2.1.1",
     "tailwind-merge": "2.5.4",
-    "framer-motion": "11.11.17",
+    "framer-motion": "^12.4.7",
     "lucide-react": "0.454.0",
     "@radix-ui/react-dialog": "1.1.2",
     "@radix-ui/react-tabs": "1.1.1",

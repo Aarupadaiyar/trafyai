@@ -5,7 +5,7 @@ const COLUMNS = [
   { heading: "Intelligence", links: [["Latest News", "/intelligence"], ["Categories", "/intelligence/category/llms"], ["Trending", "/intelligence?sort=trending"], ["RSS Feed", "/intelligence/rss.xml"]] },
   { heading: "For Talent", links: [["Get Started", "/for-talent"], ["AI Assessment", "/assessment"], ["Free Portfolio", "/portfolio"]] },
   { heading: "For Companies", links: [["Hire Talent", "/for-companies"], ["Private Workspace", "/workspace"], ["Enterprise", "/enterprise"]] },
-];
+] as const;
 
 export function Footer() {
   return (

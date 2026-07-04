@@ -1,4 +1,5 @@
 import Parser from "rss-parser";
+import * as cheerio from "cheerio";
 import type { SourceConfig } from "../sources";
 import type { ScrapedArticle } from "@/lib/validations/article";
 
@@ -8,12 +9,46 @@ const parser = new Parser({
 });
 
 export async function fetchRssSource(source: SourceConfig): Promise<Partial<ScrapedArticle>[]> {
-  const feed = await parser.parseURL(source.feedUrl);
+  const res = await fetch(source.feedUrl, {
+    headers: { "User-Agent": "TrafyIntelligenceBot/1.0 (+https://trafy.ai/intelligence)" },
+  });
+  if (!res.ok) throw new Error(`RSS fetch failed for ${source.slug}: ${res.status}`);
+  let xmlText = await res.text();
 
-  return (feed.items ?? []).slice(0, 25).map((item) => ({
+  // Fix unescaped ampersands that break XML parser
+  xmlText = xmlText.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#[xX][0-9a-fA-F]+);)/g, "&amp;");
+
+  let feedItems: any[] = [];
+  try {
+    const feed = await parser.parseString(xmlText);
+    feedItems = feed.items ?? [];
+  } catch (err) {
+    console.warn(`rss-parser failed for ${source.slug}, falling back to Cheerio XML parsing. Error: ${(err as Error).message}`);
+    const $ = cheerio.load(xmlText, { xmlMode: true });
+    $("item, entry").each((_, el) => {
+      const node = $(el);
+      const title = node.find("title").text().trim();
+      const link = node.find("link").attr("href") || node.find("link").text().trim();
+      const contentSnippet = node.find("description").text().trim() || node.find("summary").text().trim();
+      const contentEncoded = node.find("content\\:encoded, content").text().trim();
+      const creator = node.find("dc\\:creator, creator, author > name").text().trim();
+      const pubDate = node.find("pubDate, published, updated").text().trim();
+
+      feedItems.push({
+        title,
+        link,
+        contentSnippet,
+        content: contentEncoded || contentSnippet,
+        creator,
+        isoDate: pubDate,
+      });
+    });
+  }
+
+  return feedItems.slice(0, 25).map((item) => ({
     title: item.title ?? "Untitled",
     summary: stripHtml(item.contentSnippet ?? item.summary ?? "").slice(0, 500),
-    content: item["content:encoded"] ?? item.content ?? item.summary ?? "",
+    content: item["content:encoded"] || item.content || item.summary || item.contentSnippet || "",
     sourceUrl: item.link ?? "",
     sourceSlug: source.slug,
     thumbnailUrl: extractThumbnail(item),
@@ -34,6 +69,7 @@ function extractThumbnail(item: Parser.Item & Record<string, unknown>): string |
   const mediaContent = item["media:content"] as { $: { url?: string } } | undefined;
   if (mediaContent?.$.url) return mediaContent.$.url;
 
-  const match = (item.content as string | undefined)?.match(/<img[^>]+src="([^">]+)"/);
+  const contentStr = (item["content:encoded"] as string | undefined) || (item.content as string | undefined) || "";
+  const match = contentStr.match(/<img[^>]+src="([^">]+)"/);
   return match?.[1];
 }

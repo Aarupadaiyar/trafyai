@@ -1,4 +1,9 @@
 # ==========================
+# Private / Local-only Docs (NEVER commit these)
+# ==========================
+ADMIN_LOCAL.md
+
+# ==========================
 # Dependencies
 # ==========================
 node_modules/

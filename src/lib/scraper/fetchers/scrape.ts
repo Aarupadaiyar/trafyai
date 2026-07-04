@@ -2,77 +2,131 @@ import * as cheerio from "cheerio";
 import type { SourceConfig } from "../sources";
 import type { ScrapedArticle } from "@/lib/validations/article";
 
+const UA = "TrafyIntelligenceBot/1.0 (+https://trafy.ai/intelligence)";
+
 /**
- * Per-source CSS selectors. Sites without RSS need hand-tuned selectors —
- * this is the piece of the pipeline most likely to need maintenance when a
- * source redesigns its site. Keep selectors isolated here, one block per
- * source slug, so a broken source doesn't block the rest of the run.
+ * Per-source selector configs.
+ * `link: "self"` means the *item element itself* is an <a>, so href comes from node.attr("href").
+ * `title: "self"` means use the item element's own text content as the title.
+ * Any other value is treated as a child CSS selector.
  */
-const SELECTORS: Record<string, { item: string; title: string; link: string; summary?: string; image?: string }> = {
+const SELECTORS: Record<
+  string,
+  { item: string; title: string; link: string; summary?: string; image?: string }
+> = {
   anthropic: {
-    item: "a[href^='/news/']",
-    title: "h3, h2",
+    item: "a[href*='/news/']",
+    title: "self",
     link: "self",
-    summary: "p",
   },
   "meta-ai": {
-    item: "article",
-    title: "h3, h2",
-    link: "a",
-    summary: "p",
-    image: "img",
+    // Meta AI renders full absolute links in <a href="https://ai.meta.com/blog/...">
+    item: "a[href*='ai.meta.com/blog/']",
+    title: "self",
+    link: "self",
   },
   mistral: {
-    item: "a[href^='/news/']",
-    title: "h3, h2",
+    item: "a[href*='/news/']",
+    title: "self",
     link: "self",
-    summary: "p",
   },
   xai: {
-    item: "a[href^='/blog/']",
-    title: "h3, h2",
+    item: "a[href*='/blog/']",
+    title: "self",
     link: "self",
-    summary: "p",
   },
   perplexity: {
-    item: "a[href^='/hub/blog/']",
-    title: "h3, h2",
+    item: "a[href*='/hub/blog/']",
+    title: "self",
     link: "self",
+  },
+  "github-trending-ai": {
+    item: "article.Box-row",
+    title: "h2 a",
+    link: "h2 a",
     summary: "p",
   },
 };
 
-export async function fetchScrapeSource(source: SourceConfig): Promise<Partial<ScrapedArticle>[]> {
+export async function fetchScrapeSource(
+  source: SourceConfig
+): Promise<Partial<ScrapedArticle>[]> {
   const config = SELECTORS[source.slug];
   if (!config) {
-    throw new Error(`No selector config for scrape source "${source.slug}" — add one to SELECTORS.`);
+    throw new Error(
+      `No selector config for scrape source "${source.slug}" — add one to SELECTORS.`
+    );
   }
 
   const res = await fetch(source.feedUrl, {
-    headers: { "User-Agent": "TrafyIntelligenceBot/1.0 (+https://trafy.ai/intelligence)" },
-    // Scraped pages change often; never let a stale cache serve old news.
+    headers: { "User-Agent": UA },
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`Fetch failed for ${source.slug}: ${res.status}`);
 
   const $ = cheerio.load(await res.text());
+  const seen = new Set<string>();
   const results: Partial<ScrapedArticle>[] = [];
 
   $(config.item)
-    .slice(0, 20)
+    .slice(0, 25)
     .each((_, el) => {
       const node = $(el);
-      const title = node.find(config.title).first().text().trim() || node.text().trim();
-      const href = config.link === "self" ? node.attr("href") : node.find(config.link).attr("href");
-      if (!title || !href) return;
+
+      // ── title ──────────────────────────────────────────────
+      let title: string;
+      if (config.title === "self") {
+        title = node.text().replace(/\s+/g, " ").trim();
+      } else {
+        title = node.find(config.title).first().text().replace(/\s+/g, " ").trim();
+      }
+
+      // ── href ───────────────────────────────────────────────
+      let rawHref: string | undefined;
+      if (config.link === "self") {
+        rawHref = node.attr("href");
+      } else {
+        rawHref = node.find(config.link).first().attr("href");
+      }
+
+      if (!title || title.length < 5 || !rawHref) return;
+
+      const resolvedUrl = (() => {
+        try {
+          return new URL(rawHref, source.homepageUrl).toString();
+        } catch {
+          return null;
+        }
+      })();
+      if (!resolvedUrl) return;
+
+      // dedupe within this run (same page often has multiple <a> to the same URL)
+      if (seen.has(resolvedUrl)) return;
+      seen.add(resolvedUrl);
+
+      // ── summary ────────────────────────────────────────────
+      const summary = config.summary
+        ? node.find(config.summary).first().text().replace(/\s+/g, " ").trim()
+        : "";
+
+      // ── image ─────────────────────────────────────────────
+      let thumbnailUrl: string | undefined;
+      if (config.image) {
+        const src = node.find(config.image).first().attr("src");
+        if (src) {
+          try {
+            thumbnailUrl = new URL(src, source.homepageUrl).toString();
+          } catch {}
+        }
+      }
 
       results.push({
         title,
-        summary: config.summary ? node.find(config.summary).first().text().trim() : "",
+        summary,
         content: "",
-        sourceUrl: new URL(href, source.homepageUrl).toString(),
+        sourceUrl: resolvedUrl,
         sourceSlug: source.slug,
-        thumbnailUrl: config.image ? node.find(config.image).attr("src") : undefined,
+        thumbnailUrl,
         categorySlug: source.defaultCategorySlug,
         publishedAt: new Date(),
       });
