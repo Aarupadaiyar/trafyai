@@ -1,10 +1,33 @@
 import Link from "next/link";
 import { Newsletter } from "@/components/blog/Newsletter";
+import { Github, Linkedin } from "lucide-react";
 
 const COLUMNS = [
-  { heading: "Intelligence", links: [["Latest News", "/intelligence"], ["Categories", "/intelligence/category/llms"], ["Trending", "/intelligence?sort=trending"], ["RSS Feed", "/intelligence/rss.xml"]] },
-  { heading: "For Talent", links: [["Get Started", "/for-talent"], ["AI Assessment", "/assessment"], ["Free Portfolio", "/portfolio"]] },
-  { heading: "For Companies", links: [["Hire Talent", "/for-companies"], ["Private Workspace", "/workspace"], ["Enterprise", "/enterprise"]] },
+  { 
+    heading: "Intelligence", 
+    links: [
+      ["Latest News", "/intelligence"], 
+      ["Categories", "/intelligence/category/llms"], 
+      ["Trending", "/intelligence?sort=trending"], 
+      ["RSS Feed", "/intelligence/rss.xml"]
+    ] 
+  },
+  { 
+    heading: "For Talent", 
+    links: [
+      ["Get Started", "https://www.trafy.ai/#talent"], 
+      ["AI Assessment", "https://academy.trafy.ai/"], 
+      ["Free Portfolio", "https://app.trafy.ai/"]
+    ] 
+  },
+  { 
+    heading: "For Companies", 
+    links: [
+      ["Hire Talent", "https://www.trafy.ai/#companies"], 
+      ["Private Workspace", "https://build.trafy.ai/"], 
+      ["Enterprise", "https://www.trafy.ai/#how"]
+    ] 
+  },
 ] as const;
 
 export function Footer() {
@@ -27,16 +50,45 @@ export function Footer() {
             <p className="mt-4 max-w-xs text-sm text-gray-bodyDark">
               Work Tech connecting global AI talent with the world&apos;s top AI companies.
             </p>
+            <div className="mt-6 flex space-x-4">
+              <a
+                href="https://www.linkedin.com/company/trafy-ai/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-white/60 hover:text-lime transition-colors"
+                aria-label="LinkedIn"
+              >
+                <Linkedin size={20} />
+              </a>
+              <a
+                href="https://github.com/trafy-ai"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-white/60 hover:text-lime transition-colors"
+                aria-label="GitHub"
+              >
+                <Github size={20} />
+              </a>
+            </div>
           </div>
           {COLUMNS.map((col) => (
             <div key={col.heading}>
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-bodyDark">{col.heading}</p>
               <ul className="mt-4 space-y-3 text-sm">
-                {col.links.map(([label, href]) => (
-                  <li key={href}>
-                    <Link href={href} className="text-white/80 hover:text-lime">{label}</Link>
-                  </li>
-                ))}
+                {col.links.map(([label, href]) => {
+                  const isExternal = href.startsWith("http");
+                  return (
+                    <li key={href}>
+                      <Link 
+                        href={href} 
+                        className="text-white/80 hover:text-lime"
+                        {...(isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+                      >
+                        {label}
+                      </Link>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}
