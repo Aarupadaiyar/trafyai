@@ -11,7 +11,7 @@ import { sendDailyDigest } from "@/lib/email/send-digest";
 // function — if real-world runs exceed that, split runFullScrape() into
 // batches across multiple cron-triggered requests instead of raising this
 // further (Hobby won't go higher).
-export const maxDuration = 60;
+export const maxDuration = 300; // Increased to prevent sequential scraper timeouts
 
 export async function GET(req: NextRequest) {
   const auth = req.headers.get("authorization");

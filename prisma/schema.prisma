@@ -1,7 +1,3 @@
-// ────────────────────────────────────────────────────────────
-// Trafy Intelligence — Prisma Schema
-// ────────────────────────────────────────────────────────────
-
 generator client {
   provider      = "prisma-client-js"
   binaryTargets = ["native", "rhel-openssl-1.0.x", "rhel-openssl-3.0.x", "linux-musl", "linux-musl-openssl-3.0.x"]
@@ -12,72 +8,50 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ── Auth (NextAuth / admin login) ─────────────────────────────
-
 model Admin {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String?
-  image         String?
-  role          AdminRole @default(EDITOR)
-  createdAt     DateTime  @default(now())
-  lastLoginAt   DateTime?
-
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String?
+  image            String?
+  role             AdminRole @default(EDITOR)
+  createdAt        DateTime  @default(now())
+  lastLoginAt      DateTime?
   reviewedArticles Article[] @relation("ReviewedBy")
 
   @@map("admins")
 }
 
-enum AdminRole {
-  OWNER
-  EDITOR
-}
-
-// ── Core content ───────────────────────────────────────────
-
 model Article {
-  id              String        @id @default(cuid())
-  slug            String        @unique
-
+  id              String           @id @default(cuid())
+  slug            String           @unique
   title           String
-  summary         String        @db.Text
-  content         String        @db.Text // MDX body
+  summary         String
+  content         String
   thumbnailUrl    String?
   heroImageUrl    String?
-
-  status          ArticleStatus @default(DRAFT)
-  isFeatured      Boolean       @default(false)
-  isPinned        Boolean       @default(false)
-
-  importanceScore Float         @default(0) // 0-100, model-assigned
-  popularityScore Float         @default(0) // derived from views/clicks, recalculated
-  readingTimeMins Int           @default(1)
-
+  status          ArticleStatus    @default(DRAFT)
+  isFeatured      Boolean          @default(false)
+  isPinned        Boolean          @default(false)
+  importanceScore Float            @default(0)
+  popularityScore Float            @default(0)
+  readingTimeMins Int              @default(1)
   publishedAt     DateTime?
-  scrapedAt       DateTime      @default(now())
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-
-  // Relations
+  scrapedAt       DateTime         @default(now())
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
   sourceId        String
-  source          Source        @relation(fields: [sourceId], references: [id])
-
   authorId        String?
-  author          Author?       @relation(fields: [authorId], references: [id])
-
   categoryId      String
-  category        Category      @relation(fields: [categoryId], references: [id])
-
-  tags            TagsOnArticles[]
-
   reviewedById    String?
-  reviewedBy      Admin?        @relation("ReviewedBy", fields: [reviewedById], references: [id])
-
-  sourceUrl       String        @unique
-  clusterId       String?       // used by dedupe/clustering step to group similar stories
-
-  bookmarks       Bookmark[]
+  sourceUrl       String           @unique
+  clusterId       String?
   views           ArticleView[]
+  author          Author?          @relation(fields: [authorId], references: [id])
+  category        Category         @relation(fields: [categoryId], references: [id])
+  reviewedBy      Admin?           @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  source          Source           @relation(fields: [sourceId], references: [id])
+  bookmarks       Bookmark[]
+  tags            TagsOnArticles[]
 
   @@index([status, publishedAt])
   @@index([categoryId])
@@ -86,19 +60,11 @@ model Article {
   @@map("articles")
 }
 
-enum ArticleStatus {
-  PENDING   // freshly scraped, awaiting admin triage
-  APPROVED  // admin-approved, not yet published
-  DRAFT     // being edited
-  PUBLISHED
-  REJECTED
-}
-
 model Category {
-  id        String    @id @default(cuid())
-  slug      String    @unique
-  name      String
-  articles  Article[]
+  id       String    @id @default(cuid())
+  slug     String    @unique
+  name     String
+  articles Article[]
 
   @@map("categories")
 }
@@ -116,8 +82,8 @@ model Author {
 }
 
 model Tag {
-  id       String            @id @default(cuid())
-  slug     String            @unique
+  id       String           @id @default(cuid())
+  slug     String           @unique
   name     String
   articles TagsOnArticles[]
 
@@ -126,30 +92,113 @@ model Tag {
 
 model TagsOnArticles {
   articleId String
-  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
   tagId     String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
   tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@id([articleId, tagId])
   @@map("tags_on_articles")
 }
 
-// ── Sources & scraping ─────────────────────────────────────
-
 model Source {
-  id           String       @id @default(cuid())
-  slug         String       @unique
-  name         String       // e.g. "OpenAI Blog", "Reddit r/LocalLLaMA"
-  type         SourceType
-  feedUrl      String?      // RSS/Atom/API endpoint used by the scraper
-  homepageUrl  String
-  isActive     Boolean      @default(true)
-  logoUrl      String?
-
-  articles     Article[]
-  scrapeLogs   ScrapeLog[]
+  id          String      @id @default(cuid())
+  slug        String      @unique
+  name        String
+  type        SourceType
+  feedUrl     String?
+  homepageUrl String
+  isActive    Boolean     @default(true)
+  logoUrl     String?
+  articles    Article[]
+  scrapeLogs  ScrapeLog[]
 
   @@map("sources")
+}
+
+model ScrapeLog {
+  id           String       @id @default(cuid())
+  sourceId     String
+  runAt        DateTime     @default(now())
+  status       ScrapeStatus
+  itemsFound   Int          @default(0)
+  itemsNew     Int          @default(0)
+  itemsDuped   Int          @default(0)
+  durationMs   Int          @default(0)
+  errorMessage String?
+  source       Source       @relation(fields: [sourceId], references: [id])
+
+  @@index([sourceId, runAt])
+  @@map("scrape_logs")
+}
+
+model NewsletterSubscriber {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  subscribedAt DateTime @default(now())
+  isActive     Boolean  @default(true)
+  source       String?
+
+  @@map("newsletter_subscribers")
+}
+
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  name      String?
+  image     String?
+  createdAt DateTime   @default(now())
+  bookmarks Bookmark[]
+
+  @@map("users")
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  userId    String
+  articleId String
+  createdAt DateTime @default(now())
+  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, articleId])
+  @@map("bookmarks")
+}
+
+model ArticleView {
+  id           String   @id @default(cuid())
+  articleId    String
+  viewedAt     DateTime @default(now())
+  readTimeSecs Int?
+  referrer     String?
+  country      String?
+  article      Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([articleId, viewedAt])
+  @@map("article_views")
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  type      String
+  articleId String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([type, createdAt])
+  @@map("analytics_events")
+}
+
+enum AdminRole {
+  OWNER
+  EDITOR
+}
+
+enum ArticleStatus {
+  PENDING
+  APPROVED
+  DRAFT
+  PUBLISHED
+  REJECTED
 }
 
 enum SourceType {
@@ -161,87 +210,8 @@ enum SourceType {
   ARXIV
 }
 
-model ScrapeLog {
-  id             String       @id @default(cuid())
-  sourceId       String
-  source         Source       @relation(fields: [sourceId], references: [id])
-
-  runAt          DateTime     @default(now())
-  status         ScrapeStatus
-  itemsFound     Int          @default(0)
-  itemsNew       Int          @default(0)
-  itemsDuped     Int          @default(0)
-  durationMs     Int          @default(0)
-  errorMessage   String?
-
-  @@index([sourceId, runAt])
-  @@map("scrape_logs")
-}
-
 enum ScrapeStatus {
   SUCCESS
   PARTIAL
   FAILED
-}
-
-// ── Newsletter & readers ───────────────────────────────────
-
-model NewsletterSubscriber {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  subscribedAt DateTime @default(now())
-  isActive     Boolean  @default(true)
-  source       String?  // where they signed up, e.g. "homepage", "article-page"
-
-  @@map("newsletter_subscribers")
-}
-
-model User {
-  id         String     @id @default(cuid())
-  email      String     @unique
-  name       String?
-  image      String?
-  createdAt  DateTime   @default(now())
-
-  bookmarks  Bookmark[]
-
-  @@map("users")
-}
-
-model Bookmark {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  articleId String
-  article   Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-
-  @@unique([userId, articleId])
-  @@map("bookmarks")
-}
-
-// ── Analytics ────────────────────────────────────────────
-
-model ArticleView {
-  id           String   @id @default(cuid())
-  articleId    String
-  article      Article  @relation(fields: [articleId], references: [id], onDelete: Cascade)
-  viewedAt     DateTime @default(now())
-  readTimeSecs Int?
-  referrer     String?
-  country      String?
-
-  @@index([articleId, viewedAt])
-  @@map("article_views")
-}
-
-model AnalyticsEvent {
-  id        String   @id @default(cuid())
-  type      String   // "click" | "newsletter_signup" | "share" | "bookmark"
-  articleId String?
-  meta      Json?
-  createdAt DateTime @default(now())
-
-  @@index([type, createdAt])
-  @@map("analytics_events")
 }
