@@ -2,23 +2,10 @@
 
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { CATEGORIES } from "@/lib/categories";
 
-export const CATEGORIES = [
-  { slug: "llms", name: "LLMs" },
-  { slug: "agents", name: "Agents" },
-  { slug: "open-source", name: "Open Source" },
-  { slug: "research", name: "Research" },
-  { slug: "startups", name: "Startups" },
-  { slug: "funding", name: "Funding" },
-  { slug: "prompt-engineering", name: "Prompt Engineering" },
-  { slug: "infrastructure", name: "Infrastructure" },
-  { slug: "robotics", name: "Robotics" },
-  { slug: "computer-vision", name: "Computer Vision" },
-  { slug: "mlops", name: "MLOps" },
-  { slug: "data-science", name: "Data Science" },
-  { slug: "opinion", name: "Opinion" },
-  { slug: "tutorials", name: "Tutorials" },
-];
+// Re-export so existing imports from this file keep working.
+export { CATEGORIES } from "@/lib/categories";
 
 export function CategoryFilter({ activeSlug }: { activeSlug?: string }) {
   return (

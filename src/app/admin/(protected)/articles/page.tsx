@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ArticleTable } from "@/components/admin/ArticleTable";
 import { Input } from "@/components/ui/input";
-import { CATEGORIES } from "@/components/blog/CategoryFilter";
+import { CATEGORIES } from "@/lib/categories";
 
 const STATUSES = ["PENDING", "APPROVED", "DRAFT", "PUBLISHED", "REJECTED"];
 

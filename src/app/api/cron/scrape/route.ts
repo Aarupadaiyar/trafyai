@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runFullScrape } from "@/lib/scraper";
-import { sendDailyDigest } from "@/app/api/cron/digest/route";
+import { sendDailyDigest } from "@/lib/email/send-digest";
 
 // Configured in vercel.json as a backup daily job:
 //   { "crons": [{ "path": "/api/cron/scrape?digest=true", "schedule": "0 7 * * *" }] }
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 
   const summaries = await runFullScrape();
   const failed = summaries.filter((s) => s.status === "FAILED");
-  
+
   // Only send the daily digest if specifically requested via ?digest=true
   let digest = null;
   if (req.nextUrl.searchParams.get("digest") === "true") {

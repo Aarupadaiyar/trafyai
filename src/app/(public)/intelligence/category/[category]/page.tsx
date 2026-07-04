@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { CategoryFilter, CATEGORIES } from "@/components/blog/CategoryFilter";
+import { CategoryFilter } from "@/components/blog/CategoryFilter";
+import { CATEGORIES } from "@/lib/categories";
 import { ArticleCard } from "@/components/blog/ArticleCard";
 import { db } from "@/lib/db";
 import type { ArticleCardData } from "@/types";
